@@ -137,6 +137,7 @@ def update_config_with_offsets(
     port: str,
     joint_offsets: list,
     gripper_config: Optional[Tuple[float, float]],
+    channel: str = "can_left",
 ) -> dict:
     """Update a template config with detected offsets and port."""
     import copy
@@ -163,6 +164,8 @@ def update_config_with_offsets(
 
     # Update basic config
     config["agent"]["port"] = port
+    if "channel" in config["robot"]:
+        config["robot"]["channel"] = channel
 
     # Update offsets and convert to flow style
     dynamixel_config["joint_offsets"] = to_flow_list(
@@ -253,10 +256,10 @@ def main(args: Args) -> None:
 
         # Update configs with detected offsets
         hardware_config = update_config_with_offsets(
-            hardware_template, port, joint_offsets, gripper_config
+            hardware_template, port, joint_offsets, gripper_config, channel=args.channel
         )
         sim_config = update_config_with_offsets(
-            sim_template, port, joint_offsets, gripper_config
+            sim_template, port, joint_offsets, gripper_config, channel=args.channel
         )
 
     except FileNotFoundError as e:

@@ -14,6 +14,7 @@
 *tb_logs*
 *wandb*
 *wandb_logs*
+arena.xml
 outputs/*
 
 # python
