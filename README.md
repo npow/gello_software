@@ -228,6 +228,27 @@ Launch the real robot with the auto-generated hardware config file:
 python experiments/launch_yaml.py --left-config-path configs/yam_auto_generated.yaml
 ```
 
+### Experimental AS5600 YAM Leader
+
+An experimental passive YAM leader can use seven AS5600 magnetic encoders and
+an ESP32 instead of seven Dynamixel servos. Flash the versioned seven-channel
+firmware from the `npow/open-source-leader-arm` `yam-encoder-leader` branch,
+place the leader in the all-zero YAM pose with its gripper open, and update the
+serial port in `configs/yam_encoder_sim.yaml`.
+
+Test the complete encoder mapping in simulation first:
+
+```bash
+python experiments/launch_yaml.py \
+  --left-config-path configs/yam_encoder_sim.yaml
+```
+
+The hardware configuration is `configs/yam_encoder_hw.yaml`. It requires the
+firmware deadman switch and applies the physical YAM joint limits plus a
+per-joint command-rate limit. Do not disable those safeguards for follower-arm
+testing. If an encoder direction is reversed, change its entry in
+`joint_signs`; if the wiring order differs, change `channel_map`.
+
 ### Launching `gello_agent` for non-YAM arms
 
 For other robots or if not using a YAML configuration, you must launch the robot and controller nodes in separate terminals.

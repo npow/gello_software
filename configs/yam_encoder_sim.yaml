@@ -1,0 +1,35 @@
+robot:
+  _target_: gello.robots.sim_robot.MujocoRobotServer
+  xml_path: third_party/mujoco_menagerie/i2rt_yam/yam.xml
+  gripper_xml_path: null
+  host: 127.0.0.1
+  port: 6001
+
+agent:
+  _target_: gello.agents.as5600_agent.AS5600SerialAgent
+  # Replace this with the stable path from: ls /dev/serial/by-id/
+  port: /dev/serial/by-id/usb-Espressif_YAM_Encoder_Leader-if00
+  baudrate: 115200
+  channel_map: [0, 1, 2, 3, 4, 5, 6]
+  joint_signs: [1, -1, -1, -1, 1, 1, 1]
+  joint_scales: [1, 1, 1, 1, 1, 1, 1]
+  start_joints: [0, 0, 0, 0, 0, 0, 1]
+  joint_limits:
+    - [-2.617994, 3.141593]
+    - [0, 3.665191]
+    - [0, 3.141593]
+    - [-1.692970, 1.570796]
+    - [-1.570796, 1.570796]
+    - [-2.094395, 2.094395]
+    - [0, 1]
+  gripper_joint_index: 6
+  gripper_travel_rad: 0.8
+  gripper_open_value: 1
+  gripper_closed_value: 0
+  startup_timeout_s: 5
+  frame_timeout_s: 0.25
+  # Set true after wiring the deadman switch for real-hardware testing.
+  require_deadman: false
+  max_output_rates: [1.5, 1.5, 1.5, 1.5, 2, 2, 3]
+
+hz: 30
