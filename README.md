@@ -228,13 +228,20 @@ Launch the real robot with the auto-generated hardware config file:
 python experiments/launch_yaml.py --left-config-path configs/yam_auto_generated.yaml
 ```
 
-### Experimental AS5600 YAM Leader
+### Experimental no-solder YAM Leader
 
-An experimental passive YAM leader can use seven AS5600 magnetic encoders and
-an ESP32 instead of seven Dynamixel servos. Flash the versioned seven-channel
-firmware from the `npow/open-source-leader-arm` `yam-encoder-leader` branch,
-place the leader in the all-zero YAM pose with its gripper open, and update the
-serial port in `configs/yam_encoder_sim.yaml`.
+The matching
+[`npow/open-source-leader-arm` branch](https://github.com/npow/open-source-leader-arm/tree/yam-encoder-leader/yam)
+uses seven factory-wired B10K potentiometers, seven load-bearing 6000-2RS
+bearings, and a pre-soldered Arduino Nano on an I/O shield. Its current core
+cart is about $49 delivered to San Francisco, and assembly uses no solder,
+magnets, mux, hex nuts, or joint screws.
+
+Flash that branch's `firmware/yam_encoder_leader/yam_encoder_leader.ino`, keep
+the gripper released while the Nano starts, and update the Nano serial port in
+`configs/yam_encoder_sim.yaml`. Assemble and calibrate the leader at its printed
+CAD zero pose: J1/J2/J3 map to the midpoint of their YAM ranges, J4/J5/J6 are
+zero, and the gripper is open.
 
 Test the complete encoder mapping in simulation first:
 
@@ -244,10 +251,12 @@ python experiments/launch_yaml.py \
 ```
 
 The hardware configuration is `configs/yam_encoder_hw.yaml`. It requires the
-firmware deadman switch and applies the physical YAM joint limits plus a
-per-joint command-rate limit. Do not disable those safeguards for follower-arm
-testing. If an encoder direction is reversed, change its entry in
-`joint_signs`; if the wiring order differs, change `channel_map`.
+gripper-derived firmware deadman and applies the physical YAM joint limits plus
+a per-joint command-rate limit. Do not disable those safeguards for follower
+testing. If a pot direction is reversed, change its `joint_signs` entry; if the
+plug order differs, change `channel_map`. The agent accepts the Nano's `YAMP1`
+10-bit protocol, does not apply circular encoder rollover, and scales J1's
+protected 280-degree leader sweep onto YAM's 325-degree range.
 
 ### Launching `gello_agent` for non-YAM arms
 

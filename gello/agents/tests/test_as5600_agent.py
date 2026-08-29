@@ -8,6 +8,8 @@ from gello.agents.as5600_agent import (
     CountUnwrapper,
     EncoderMapper,
     EncoderProtocolError,
+    POTENTIOMETER_RADIANS_PER_COUNT,
+    PotentiometerSerialAgent,
     parse_encoder_line,
 )
 
@@ -37,11 +39,28 @@ def test_parse_rejects_failed_sensor():
         parse_encoder_line(b"YAM1,1,10,0,1,2,-1,4,5,6,1\n")
 
 
+def test_parse_potentiometer_frame_uses_ten_bit_range():
+    frame = parse_encoder_line(b"YAMP1,42,1234,0,1,2,3,4,5,1023,1\n")
+
+    assert frame is not None
+    assert frame.protocol_tag == "YAMP1"
+    assert frame.counts[-1] == 1023
+    with pytest.raises(EncoderProtocolError, match=r"\[0, 1023\]"):
+        parse_encoder_line(b"YAMP1,43,1244,0,1,2,3,4,5,1024,1\n")
+
+
 def test_count_unwrapper_crosses_zero_both_directions():
     unwrapper = CountUnwrapper(2)
 
     np.testing.assert_array_equal(unwrapper.update([4090, 5]), [0, 0])
     np.testing.assert_array_equal(unwrapper.update([3, 4092]), [9, -9])
+
+
+def test_non_wrapping_count_tracker_does_not_wrap_adc_values():
+    tracker = CountUnwrapper(1, count_modulus=None)
+
+    np.testing.assert_array_equal(tracker.update([1000]), [0])
+    np.testing.assert_array_equal(tracker.update([10]), [-990])
 
 
 def test_mapper_applies_channel_sign_gripper_and_limits():
@@ -122,3 +141,39 @@ def test_agent_rejects_firmware_restart():
 
     with pytest.raises(EncoderProtocolError, match="restarted"):
         agent.act({"joint_positions": np.zeros(7)})
+
+
+def test_potentiometer_agent_uses_non_wrapping_300_degree_mapping():
+    serial = FakeSerial(
+        [
+            b"YAMP1,1,10,500,500,500,500,500,500,500,1\n",
+            b"YAMP1,2,20,600,500,500,500,500,500,600,1\n",
+        ]
+    )
+    agent = PotentiometerSerialAgent(
+        port="unused",
+        start_joints=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        joint_limits=YAM_LIMITS,
+        joint_signs=[1, 1, 1, 1, 1, 1, 1],
+        gripper_travel_rad=100 * POTENTIOMETER_RADIANS_PER_COUNT,
+        serial_connection=serial,
+        require_deadman=True,
+    )
+
+    action = agent.act({"joint_positions": np.zeros(7)})
+
+    assert action[0] == pytest.approx(100 * POTENTIOMETER_RADIANS_PER_COUNT)
+    assert action[6] == pytest.approx(0.0)
+
+
+def test_potentiometer_agent_rejects_encoder_firmware():
+    serial = FakeSerial(
+        [b"YAM1,1,10,500,500,500,500,500,500,500,1\n"]
+    )
+    with pytest.raises(EncoderProtocolError, match="Expected YAMP1"):
+        PotentiometerSerialAgent(
+            port="unused",
+            start_joints=[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+            joint_limits=YAM_LIMITS,
+            serial_connection=serial,
+        )

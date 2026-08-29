@@ -1,4 +1,4 @@
-"""Serial agent for passive leader arms built with AS5600 encoders."""
+"""Serial agents for passive YAM leaders using encoders or potentiometers."""
 
 import math
 import time
@@ -9,7 +9,11 @@ import numpy as np
 
 COUNTS_PER_REVOLUTION = 4096
 RADIANS_PER_COUNT = 2.0 * math.pi / COUNTS_PER_REVOLUTION
-PROTOCOL_TAG = "YAM1"
+POTENTIOMETER_COUNTS = 1024
+POTENTIOMETER_RADIANS_PER_COUNT = math.radians(300.0) / (
+    POTENTIOMETER_COUNTS - 1
+)
+PROTOCOL_COUNT_MAX = {"YAM1": 4095, "YAMP1": 1023}
 
 
 class EncoderProtocolError(RuntimeError):
@@ -24,6 +28,7 @@ class EncoderFrame:
     sequence: Optional[int] = None
     device_ms: Optional[int] = None
     deadman_pressed: Optional[bool] = None
+    protocol_tag: Optional[str] = None
 
 
 def parse_encoder_line(
@@ -31,9 +36,10 @@ def parse_encoder_line(
 ) -> Optional[EncoderFrame]:
     """Parse a versioned YAM frame or the original comma-separated format.
 
-    Versioned frames have the following fields::
+    Versioned encoder (``YAM1``) and potentiometer (``YAMP1``) frames have the
+    following fields::
 
-        YAM1,sequence,device_ms,count0,...,count6,deadman
+        tag,sequence,device_ms,count0,...,count6,deadman
 
     Blank lines and diagnostic lines beginning with ``#`` are ignored. The
     legacy format is accepted to make bench testing with the original firmware
@@ -50,11 +56,12 @@ def parse_encoder_line(
         raise EncoderProtocolError("Encoder frame is not ASCII") from exc
 
     fields = text.split(",")
-    if fields[0] == PROTOCOL_TAG:
+    protocol_tag = fields[0] if fields[0] in PROTOCOL_COUNT_MAX else None
+    if protocol_tag is not None:
         expected_fields = expected_channels + 4
         if len(fields) != expected_fields:
             raise EncoderProtocolError(
-                f"Expected {expected_fields} fields in {PROTOCOL_TAG} frame, "
+                f"Expected {expected_fields} fields in {protocol_tag} frame, "
                 f"received {len(fields)}"
             )
         try:
@@ -73,6 +80,7 @@ def parse_encoder_line(
             sequence=sequence,
             device_ms=device_ms,
             deadman_pressed=bool(deadman_raw),
+            protocol_tag=protocol_tag,
         )
     else:
         if len(fields) != expected_channels:
@@ -87,23 +95,27 @@ def parse_encoder_line(
                 "Encoder frame contains a non-integer count"
             ) from exc
 
-    bad_counts = [
-        count for count in frame.counts if not 0 <= count < COUNTS_PER_REVOLUTION
-    ]
+    maximum_count = PROTOCOL_COUNT_MAX.get(
+        frame.protocol_tag or "YAM1", COUNTS_PER_REVOLUTION - 1
+    )
+    bad_counts = [count for count in frame.counts if not 0 <= count <= maximum_count]
     if bad_counts:
         raise EncoderProtocolError(
-            f"Encoder counts must be in [0, {COUNTS_PER_REVOLUTION - 1}], "
+            f"Encoder counts must be in [0, {maximum_count}], "
             f"received {bad_counts}"
         )
     return frame
 
 
 class CountUnwrapper:
-    """Turn wrapped 12-bit absolute readings into continuous encoder counts."""
+    """Track count deltas, optionally unwrapping a circular encoder."""
 
-    def __init__(self, num_channels: int):
+    def __init__(self, num_channels: int, count_modulus: Optional[int] = 4096):
+        if count_modulus is not None and count_modulus <= 1:
+            raise ValueError("count_modulus must be greater than one or None")
         self._last: Optional[np.ndarray] = None
         self._total = np.zeros(num_channels, dtype=np.int64)
+        self._count_modulus = count_modulus
 
     def update(self, counts: Sequence[int]) -> np.ndarray:
         current = np.asarray(counts, dtype=np.int64)
@@ -116,9 +128,10 @@ class CountUnwrapper:
             return self._total.copy()
 
         delta = current - self._last
-        half_revolution = COUNTS_PER_REVOLUTION // 2
-        delta[delta > half_revolution] -= COUNTS_PER_REVOLUTION
-        delta[delta < -half_revolution] += COUNTS_PER_REVOLUTION
+        if self._count_modulus is not None:
+            half_revolution = self._count_modulus // 2
+            delta[delta > half_revolution] -= self._count_modulus
+            delta[delta < -half_revolution] += self._count_modulus
         self._total += delta
         self._last = current
         return self._total.copy()
@@ -138,6 +151,8 @@ class EncoderMapper:
         gripper_travel_rad: float = 0.8,
         gripper_open_value: float = 1.0,
         gripper_closed_value: float = 0.0,
+        radians_per_count: float = RADIANS_PER_COUNT,
+        count_modulus: Optional[int] = COUNTS_PER_REVOLUTION,
     ):
         self._start_joints = np.asarray(start_joints, dtype=float)
         self._channel_map = np.asarray(channel_map, dtype=int)
@@ -151,6 +166,7 @@ class EncoderMapper:
         self._gripper_travel_rad = float(gripper_travel_rad)
         self._gripper_open_value = float(gripper_open_value)
         self._gripper_closed_value = float(gripper_closed_value)
+        self._radians_per_count = float(radians_per_count)
 
         num_joints = len(self._start_joints)
         if num_joints != 7:
@@ -186,6 +202,8 @@ class EncoderMapper:
             raise ValueError("gripper_joint_index is out of range")
         if self._gripper_travel_rad <= 0:
             raise ValueError("gripper_travel_rad must be positive")
+        if self._radians_per_count <= 0:
+            raise ValueError("radians_per_count must be positive")
         gripper_limits = self._joint_limits[gripper_joint_index]
         for name, value in (
             ("gripper_open_value", self._gripper_open_value),
@@ -194,7 +212,7 @@ class EncoderMapper:
             if not gripper_limits[0] <= value <= gripper_limits[1]:
                 raise ValueError(f"{name} must be inside the gripper joint limits")
 
-        self._unwrapper = CountUnwrapper(num_joints)
+        self._unwrapper = CountUnwrapper(num_joints, count_modulus=count_modulus)
         self._calibrated = False
 
     def calibrate(self, counts: Sequence[int]) -> np.ndarray:
@@ -211,7 +229,7 @@ class EncoderMapper:
             raise RuntimeError("EncoderMapper must be calibrated before mapping counts")
 
         unwrapped = self._unwrapper.update(counts)
-        encoder_delta_rad = unwrapped * RADIANS_PER_COUNT
+        encoder_delta_rad = unwrapped * self._radians_per_count
         joint_delta_rad = (
             encoder_delta_rad[self._channel_map]
             * self._joint_signs
@@ -257,10 +275,14 @@ class AS5600SerialAgent:
         require_deadman: bool = True,
         max_output_rates: Optional[Sequence[float]] = None,
         serial_connection: Optional[Any] = None,
+        radians_per_count: float = RADIANS_PER_COUNT,
+        count_modulus: Optional[int] = COUNTS_PER_REVOLUTION,
+        expected_protocol_tag: Optional[str] = "YAM1",
     ):
         self._num_channels = len(start_joints)
         self._frame_timeout_s = float(frame_timeout_s)
         self._require_deadman = require_deadman
+        self._expected_protocol_tag = expected_protocol_tag
         if self._frame_timeout_s <= 0 or startup_timeout_s <= 0:
             raise ValueError("Serial timeouts must be positive")
 
@@ -274,6 +296,8 @@ class AS5600SerialAgent:
             gripper_travel_rad=gripper_travel_rad,
             gripper_open_value=gripper_open_value,
             gripper_closed_value=gripper_closed_value,
+            radians_per_count=radians_per_count,
+            count_modulus=count_modulus,
         )
 
         if max_output_rates is None:
@@ -312,7 +336,7 @@ class AS5600SerialAgent:
         self._validate_sequence(first_frame)
         self._last_action = self._mapper.calibrate(first_frame.counts)
         self._last_action_time = time.monotonic()
-        print(f"AS5600 leader calibrated on counts {list(first_frame.counts)}")
+        print(f"Passive leader calibrated on counts {list(first_frame.counts)}")
 
     def _read_frame(self, timeout_s: float) -> EncoderFrame:
         deadline = time.monotonic() + timeout_s
@@ -322,6 +346,7 @@ class AS5600SerialAgent:
             if line:
                 frame = parse_encoder_line(line, self._num_channels)
                 if frame is not None:
+                    self._validate_protocol(frame)
                     latest = frame
 
                 # Drain buffered samples so the follower uses the newest pose.
@@ -331,6 +356,7 @@ class AS5600SerialAgent:
                         break
                     frame = parse_encoder_line(buffered, self._num_channels)
                     if frame is not None:
+                        self._validate_protocol(frame)
                         latest = frame
                 if latest is not None:
                     return latest
@@ -338,11 +364,20 @@ class AS5600SerialAgent:
             f"No complete encoder frame received for {timeout_s:.3f} seconds"
         )
 
+    def _validate_protocol(self, frame: EncoderFrame) -> None:
+        if self._expected_protocol_tag is None:
+            return
+        if frame.protocol_tag != self._expected_protocol_tag:
+            received = frame.protocol_tag or "legacy unversioned"
+            raise EncoderProtocolError(
+                f"Expected {self._expected_protocol_tag} firmware, received {received}"
+            )
+
     def _validate_sequence(self, frame: EncoderFrame) -> None:
         if frame.sequence is None:
             if self._require_deadman:
                 raise EncoderProtocolError(
-                    "Deadman safety requires versioned YAM1 firmware frames"
+                    "Deadman safety requires versioned firmware frames"
                 )
             return
         if self._last_sequence is not None:
@@ -378,7 +413,7 @@ class AS5600SerialAgent:
 
         if self._require_deadman:
             if frame.deadman_pressed is None:
-                raise EncoderProtocolError("YAM1 frame is missing the deadman state")
+                raise EncoderProtocolError("Firmware frame is missing the deadman state")
             if not frame.deadman_pressed:
                 follower_joints = np.asarray(obs["joint_positions"], dtype=float)
                 if follower_joints.shape != (self._num_channels,):
@@ -399,3 +434,13 @@ class AS5600SerialAgent:
 
         if hasattr(self._serial, "close"):
             self._serial.close()
+
+
+class PotentiometerSerialAgent(AS5600SerialAgent):
+    """Read the no-solder seven-potentiometer Nano leader."""
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        kwargs.setdefault("radians_per_count", POTENTIOMETER_RADIANS_PER_COUNT)
+        kwargs.setdefault("count_modulus", None)
+        kwargs.setdefault("expected_protocol_tag", "YAMP1")
+        super().__init__(*args, **kwargs)
