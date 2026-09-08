@@ -83,6 +83,61 @@ def signal_handler(signum, frame):
     os._exit(0)
 
 
+def preflight_can_check(channel: str):
+    """Ensure CAN interface is UP and clear any latched faults before robot init."""
+    import subprocess
+
+    try:
+        res = subprocess.run(
+            ["ip", "link", "show", channel],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if res.returncode == 0 and (
+            "state DOWN" in res.stdout
+            or ("<NOARP" in res.stdout and "UP" not in res.stdout)
+        ):
+            print(
+                f"[Auto-Recovery] CAN interface '{channel}' is DOWN. Bringing it UP..."
+            )
+            subprocess.run(
+                [
+                    "sudo",
+                    "ip",
+                    "link",
+                    "set",
+                    channel,
+                    "up",
+                    "type",
+                    "can",
+                    "bitrate",
+                    "1000000",
+                ],
+                check=False,
+            )
+    except Exception:
+        pass
+
+    try:
+        import can
+
+        bus = can.interface.Bus(channel=channel, interface="socketcan")
+        print(f"[Auto-Recovery] Pre-clearing latched motor errors on '{channel}'...")
+        for mid in range(1, 8):
+            bus.send(
+                can.Message(
+                    arbitration_id=mid, data=[0xFF] * 7 + [0xFB], is_extended_id=False
+                )
+            )
+        time.sleep(0.02)
+        while bus.recv(timeout=0.005) is not None:
+            pass
+        bus.shutdown()
+    except Exception:
+        pass
+
+
 def main():
     # Register cleanup handlers
     # If terminated without cleanup, can leave ZMQ sockets bound causing "address in use" errors or resource leaks
@@ -122,25 +177,42 @@ def main():
             OmegaConf.load(left_robot_cfg["config"]), resolve=True
         )
 
-    left_robot = instantiate_from_dict(left_robot_cfg)
-
     if bimanual:
-        from gello.robots.robot import BimanualRobot
-
         right_robot_cfg = right_cfg["robot"]
         if isinstance(right_robot_cfg.get("config"), str):
             right_robot_cfg["config"] = OmegaConf.to_container(
                 OmegaConf.load(right_robot_cfg["config"]), resolve=True
             )
 
-        right_robot = instantiate_from_dict(right_robot_cfg)
-        robot = BimanualRobot(left_robot, right_robot)
+    # Pre-flight CAN check and fault clearing
+    can_channels = []
+    if "channel" in left_robot_cfg:
+        can_channels.append(left_robot_cfg["channel"])
+    if bimanual and "channel" in right_robot_cfg:
+        can_channels.append(right_robot_cfg["channel"])
+    for ch in can_channels:
+        preflight_can_check(ch)
 
-        # For bimanual, use the left config for general settings (hz, etc.)
-        cfg = left_cfg
-    else:
-        robot = left_robot
-        cfg = left_cfg
+    try:
+        left_robot = instantiate_from_dict(left_robot_cfg)
+
+        if bimanual:
+            from gello.robots.robot import BimanualRobot
+
+            right_robot = instantiate_from_dict(right_robot_cfg)
+            robot = BimanualRobot(left_robot, right_robot)
+
+            # For bimanual, use the left config for general settings (hz, etc.)
+            cfg = left_cfg
+        else:
+            robot = left_robot
+            cfg = left_cfg
+    except Exception as e:
+        print(f"\n[Launch Error] Robot initialization failed: {e}")
+        cleanup()
+        import os
+
+        os._exit(1)
 
     # Handle different robot types
     if hasattr(robot, "serve"):  # MujocoRobotServer or ZMQServerRobot
