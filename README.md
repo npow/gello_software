@@ -283,11 +283,29 @@ python experiments/run_env.py --agent=gello
 
 ### Troubleshooting
 
-If, when you run `generate_yam_config.py`, you get an error detecting offsets, you may need to add your user to the dialout user group. To do so, run:
-`sudo usermod -aG dialout $USER`
-And then log out and log back in or restart your computer.s
+- **Dialout Permissions**: If, when you run `generate_yam_config.py`, you get an error detecting offsets or opening serial devices, ensure your user belongs to the `dialout` group:
+  ```bash
+  sudo usermod -aG dialout $USER
+  ```
+  Then log out and log back in.
 
-If some joints in your arm are not behaving as expected, you may need to modify the joint signs of your configuration. Simply invert the affected joint sign(s) in your .yaml or `gello_agent.py` or physically reverse the installation of the servo.
+- **Dynamixel `-3001` (`COMM_RX_TIMEOUT`) on Init**: If leader arm initialization fails with `Failed to set torque mode for Dynamixel with ID 1`, an orphaned process may still be reading from the serial port. Kill any dangling processes:
+  ```bash
+  pkill -9 -f launch_yaml
+  ```
+  The Dynamixel driver automatically clears stale RX/TX buffers on init and retries up to 3 times.
+
+- **CAN Bus `Network is down [Error Code 100]`**: If the CAN interface dropped after power-cycling or USB reconnect:
+  ```bash
+  sudo bash scripts/reset_all_can.sh
+  ```
+
+- **Rerun `data source failed to fetch ...`**: When viewing Rerun recordings across a network (LAN or Tailscale), browsers reject cross-origin requests between the web viewer port (9090) and the gRPC data port (9876) unless wildcard CORS is enabled. Always include `--cors-allow-origin "*"`:
+  ```bash
+  rerun <path_to_recording>.rrd --web-viewer --web-viewer-port 9090 --cors-allow-origin "*"
+  ```
+
+- **Joint Sign Reversals**: If some joints in your arm are moving in reverse, invert the affected joint sign(s) (`1` to `-1` or vice versa) in your YAML config or `gello_agent.py`.
 
 ### Optional: Starting Configuration
 
@@ -298,18 +316,57 @@ python experiments/run_env.py --agent=gello --start-joints <joint_angles>
 
 ## Advanced Features
 
-### Data Collection
+### Data Collection & Rerun Live Dashboard
 
-Collect teleoperation demonstrations with keyboard controls.
+Collect teleoperation demonstrations with synchronized episodic recording and real-time visualization.
 
-For the YAM arm launched with `launch_yaml.py`, you can append the flag `--use-save-interface` to enable data saving. This is the recommended method.
+#### Option 1: Live Rerun Dashboard & Episodic Recorder (Recommended)
 
+Launch teleoperation with `--use_rerun` to stream joint positions, commanded states, and multi-camera video in real-time to an interactive Rerun dashboard. Each episode is saved with `.npz` trajectory data, `.mp4` camera videos, and a native `.rrd` Rerun recording stream.
+
+```bash
+python experiments/launch_yaml.py \
+  --left-config-path configs/yam_auto_generated.yaml \
+  --right-config-path configs/yam_auto_generated_right.yaml \
+  --use_rerun
 ```
+
+**Controls during teleoperation:**
+- Press **`Space`** or **`s`**: Start / Stop recording an episode.
+- Press **`d`**: Discard currently recording episode without saving.
+- Press **`q`**: Quit teleoperation.
+
+**Accessing the Dashboard Remotely (Tailscale / LAN):**
+The server automatically binds to `0.0.0.0:9090` (web proxy) and `0.0.0.0:9876` (gRPC telemetry). You can open it in any browser across your Tailnet:
+- **Tailnet DNS**: `http://<tailscale-hostname>.ts.net:9090` (e.g., `http://thor.tail17f7a4.ts.net:9090`)
+- **MagicDNS**: `http://<tailscale-hostname>:9090` (e.g., `http://thor:9090`)
+- **Direct IP**: `http://<tailnet-ip>:9090` (e.g., `http://100.91.170.9:9090`)
+- **Native Desktop App**: `rerun rerun+http://<tailscale-hostname>:9876/proxy`
+
+#### Playing Back Recorded Episodes Out-of-the-Box
+
+Recorded episodes are stored under `data/episodes/episode_XXXX/`. Each episode contains a native `recording.rrd` file that can be loaded directly into Rerun without custom scripts:
+
+```bash
+# Serve episode via Rerun web viewer
+rerun data/episodes/episode_0060/recording.rrd --web-viewer --web-viewer-port 9090 --cors-allow-origin "*"
+```
+
+> **Note on `--cors-allow-origin "*"`**: When accessing Rerun's web viewer remotely (over LAN or Tailscale), Rerun's gRPC server requires `--cors-allow-origin "*"` so the browser on port 9090 can fetch telemetry from port 9876 without cross-origin rejections.
+
+Then open in your browser:
+`http://<host>:9090/?url=rerun%2Bhttp%3A%2F%2F<host>%3A9876%2Fproxy`
+
+#### Option 2: Legacy Save Interface
+
+For the YAM arm launched with `launch_yaml.py`, you can append `--use-save-interface` to enable legacy data saving:
+
+```bash
 python experiments/launch_yaml.py --left-config-path configs/yam_passive.yaml --use-save-interface
 ```
-After launching, you can begin saving with `s` and stop saving with `q`. Data saved will be in the `data` directory in the root of the project.
+After launching, begin saving with `s` and stop saving with `q`. Data will be saved in the `data` directory.
 
-For non-YAM setups, use the following:
+For non-YAM setups, use:
 ```bash
 python experiments/run_env.py --agent=gello --use-save-interface
 ```
