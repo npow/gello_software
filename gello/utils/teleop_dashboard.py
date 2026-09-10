@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import http.server
 import json
 import os
 import select
+import subprocess
 import sys
 import termios
+import threading
 import time
 import tty
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -31,6 +36,81 @@ RED = "\033[91m"
 CYAN = "\033[96m"
 BOLD = "\033[1m"
 RESET = "\033[0m"
+
+
+def get_network_addrs(web_port: int, grpc_port: int) -> Dict[str, str]:
+    """Discover tailnet and local addresses for convenient display."""
+    addrs = {
+        "localhost": f"http://127.0.0.1:{web_port}",
+    }
+    ts_ip = None
+    try:
+        res = subprocess.run(
+            ["tailscale", "ip", "-4"], capture_output=True, text=True, check=False
+        )
+        if res.returncode == 0:
+            ts_ip = res.stdout.strip().split("\n")[0].strip()
+            if ts_ip:
+                addrs["tailnet_ip"] = f"http://{ts_ip}:{web_port}"
+                addrs["tailnet_grpc"] = f"rerun+http://{ts_ip}:{grpc_port}/proxy"
+
+        if ts_ip:
+            res_status = subprocess.run(
+                ["tailscale", "status"], capture_output=True, text=True, check=False
+            )
+            if res_status.returncode == 0:
+                for line in res_status.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) >= 3 and parts[0] == ts_ip:
+                        addrs["tailnet_name"] = f"http://{parts[1]}:{web_port}"
+                        addrs["tailnet_fqdn"] = f"http://{parts[2]}:{web_port}"
+                        break
+    except Exception:
+        pass
+    return addrs
+
+
+class _AutoRedirectProxy(http.server.SimpleHTTPRequestHandler):
+    """HTTP proxy that forwards requests to Rerun's web viewer and auto-injects ?url= on root requests."""
+
+    grpc_port: int = 9876
+    internal_port: int = 9091
+
+    def log_message(self, format, *args):
+        # Suppress noisy HTTP asset logs from terminal
+        pass
+
+    def do_HEAD(self):
+        self.do_GET()
+
+    def do_GET(self):
+        host_header = self.headers.get("Host", f"127.0.0.1:{self.server.server_port}")
+        host = host_header.split(":")[0]
+
+        parsed = urllib.parse.urlparse(self.path)
+        # If user opened root path without ?url=, 302 redirect with ?url= matching their Host
+        if parsed.path == "/" and not parsed.query:
+            target = f"/?url=rerun+http://{host}:{self.grpc_port}/proxy"
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.end_headers()
+            return
+
+        # Proxy static asset requests (.wasm, .js, .html) to internal Rerun web viewer
+        url = f"http://127.0.0.1:{self.internal_port}{self.path}"
+        req = urllib.request.Request(url, headers=dict(self.headers))
+        try:
+            with urllib.request.urlopen(req) as resp:
+                self.send_response(resp.status)
+                for k, v in resp.headers.items():
+                    if k.lower() not in ("transfer-encoding", "content-length"):
+                        self.send_header(k, v)
+                content = resp.read()
+                self.send_header("Content-Length", str(len(content)))
+                self.end_headers()
+                self.wfile.write(content)
+        except Exception as e:
+            self.send_error(502, f"Proxy error: {e}")
 
 
 class TerminalKeyboard:
@@ -70,6 +150,8 @@ class RerunDashboard:
         output_dir: str = "data/episodes",
         use_web: bool = False,
         web_port: int = 9090,
+        grpc_port: int = 9876,
+        bind_host: str = "0.0.0.0",
         enable_cameras: bool = True,
         save_rrd: bool = True,
         camera_fps: int = 15,
@@ -81,6 +163,10 @@ class RerunDashboard:
         self.enable_cameras = enable_cameras
         self.save_rrd = save_rrd
         self.camera_fps = camera_fps
+        self.bind_host = bind_host
+        self.web_port = web_port
+        self.grpc_port = grpc_port
+        self._proxy_server: Optional[http.server.ThreadingHTTPServer] = None
 
         # Initialize terminal keyboard
         self.kb = TerminalKeyboard()
@@ -122,30 +208,80 @@ class RerunDashboard:
         has_display = bool(
             os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
         )
+
+        rr.init("yam_teleop")
+
+        # Always serve gRPC with wildcard CORS so remote/tailnet viewers can connect
+        try:
+            rr.serve_grpc(grpc_port=grpc_port, cors_allow_origin=["*"])
+        except Exception as e:
+            print(f"  {YELLOW}⚠{RESET} Rerun gRPC notice: {e}")
+
+        # If web requested or headless, start web viewer and proxy
         if use_web or not has_display:
-            rr.init("yam_teleop")
+            internal_port = web_port + 1
             try:
-                rr.serve_web_viewer(web_port=web_port, open_browser=has_display)
-                print(
-                    f"\n{BOLD}{CYAN}🌐 Rerun Web Dashboard running at: http://127.0.0.1:{web_port}{RESET}"
+                rr.serve_web_viewer(web_port=internal_port, open_browser=False)
+
+                class ConfiguredProxy(_AutoRedirectProxy):
+                    pass
+
+                ConfiguredProxy.grpc_port = grpc_port
+                ConfiguredProxy.internal_port = internal_port
+
+                self._proxy_server = http.server.ThreadingHTTPServer(
+                    (bind_host, web_port), ConfiguredProxy
                 )
-                print(
-                    f"   (Open this URL in any browser on your network to view the operator dashboard)\n"
+                t = threading.Thread(
+                    target=self._proxy_server.serve_forever, daemon=True
                 )
+                t.start()
+
+                net_info = get_network_addrs(web_port, grpc_port)
+                print(
+                    f"\n{BOLD}{CYAN}🌐 Rerun Web Dashboard Active (Bound to {bind_host}:{web_port}):{RESET}"
+                )
+                if "tailnet_ip" in net_info:
+                    print(f"  • {BOLD}Tailnet IP:{RESET}    {net_info['tailnet_ip']}")
+                if "tailnet_name" in net_info:
+                    print(f"  • {BOLD}MagicDNS:{RESET}      {net_info['tailnet_name']}")
+                print(f"  • {BOLD}Localhost:{RESET}     {net_info['localhost']}")
+                if "tailnet_grpc" in net_info:
+                    print(
+                        f"  • {BOLD}Native App:{RESET}    rerun {net_info['tailnet_grpc']}\n"
+                    )
+                else:
+                    print(
+                        f"  • {BOLD}Native App:{RESET}    rerun rerun+http://127.0.0.1:{grpc_port}/proxy\n"
+                    )
             except Exception as e:
                 print(f"  {YELLOW}⚠{RESET} Web viewer notice: {e}")
         else:
             try:
-                rr.init("yam_teleop", spawn=True)
+                rr.spawn()
+                print(
+                    f"{BOLD}{CYAN}🖥️ Rerun native viewer spawned on local display.{RESET}"
+                )
             except Exception as e:
                 print(
                     f"  {YELLOW}⚠{RESET} Native spawn failed ({e}), falling back to web viewer..."
                 )
-                rr.init("yam_teleop")
-                rr.serve_web_viewer(web_port=web_port, open_browser=False)
-                print(
-                    f"{BOLD}{CYAN}🌐 Rerun Web Dashboard running at: http://127.0.0.1:{web_port}{RESET}"
+                internal_port = web_port + 1
+                rr.serve_web_viewer(web_port=internal_port, open_browser=False)
+
+                class ConfiguredProxy(_AutoRedirectProxy):
+                    pass
+
+                ConfiguredProxy.grpc_port = grpc_port
+                ConfiguredProxy.internal_port = internal_port
+
+                self._proxy_server = http.server.ThreadingHTTPServer(
+                    (bind_host, web_port), ConfiguredProxy
                 )
+                t = threading.Thread(
+                    target=self._proxy_server.serve_forever, daemon=True
+                )
+                t.start()
 
         # Setup Blueprint
         views = []
@@ -405,6 +541,13 @@ class RerunDashboard:
     def close(self):
         if self.is_recording:
             self._stop_recording()
+        if self._proxy_server is not None:
+            try:
+                self._proxy_server.shutdown()
+                self._proxy_server.server_close()
+            except Exception:
+                pass
+            self._proxy_server = None
         self.kb.close()
         for cam in self.cameras.values():
             cam.close()

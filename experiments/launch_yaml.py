@@ -86,6 +86,15 @@ class Args:
     data_dir: str = "data/episodes"
     """Output directory for recorded episodes."""
 
+    bind_host: str = "0.0.0.0"
+    """Host IP to bind web viewer, gRPC stream, and robot servers to (default: 0.0.0.0 for Tailnet access)."""
+
+    web_port: int = 9090
+    """Port for Rerun web operator dashboard."""
+
+    grpc_port: int = 9876
+    """Port for Rerun gRPC telemetry stream."""
+
 
 def signal_handler(signum, frame):
     """Handle shutdown signals gracefully."""
@@ -257,7 +266,7 @@ def main():
 
         # Get server configuration (use a different default port for hardware)
         hardware_port = cfg.get("hardware_server_port", 6001)
-        hardware_host = "127.0.0.1"
+        hardware_host = args.bind_host
 
         # Create ZMQ server for the hardware robot
         server = ZMQServerRobot(robot, port=hardware_port, host=hardware_host)
@@ -268,15 +277,15 @@ def main():
         active_threads.append(server_thread)
         active_servers.append(server)
 
-        # Wait for server to be ready
+        # Wait for server to be ready (connect via localhost loopback)
         print(
             f"Waiting for hardware server to start on {hardware_host}:{hardware_port}..."
         )
-        wait_for_server_ready(hardware_port, hardware_host)
+        wait_for_server_ready(hardware_port, "127.0.0.1")
         print("Hardware server ready!")
 
-        # Create client to communicate with hardware
-        robot_client = ZMQClientRobot(port=hardware_port, host=hardware_host)
+        # Create client to communicate with hardware locally
+        robot_client = ZMQClientRobot(port=hardware_port, host="127.0.0.1")
 
     env = RobotEnv(robot_client, control_rate_hz=cfg.get("hz", 30))
 
@@ -305,6 +314,9 @@ def main():
         dashboard = RerunDashboard(
             output_dir=args.data_dir,
             use_web=args.rerun_web,
+            web_port=args.web_port,
+            grpc_port=args.grpc_port,
+            bind_host=args.bind_host,
             enable_cameras=args.enable_cameras,
             bimanual=bimanual,
         )
