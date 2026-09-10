@@ -39,32 +39,35 @@ RESET = "\033[0m"
 
 
 def get_network_addrs(web_port: int, grpc_port: int) -> Dict[str, str]:
-    """Discover tailnet and local addresses for convenient display."""
+    """Discover Tailscale DNS, MagicDNS, Tailnet IP, and local addresses."""
     addrs = {
         "localhost": f"http://127.0.0.1:{web_port}",
     }
-    ts_ip = None
     try:
         res = subprocess.run(
-            ["tailscale", "ip", "-4"], capture_output=True, text=True, check=False
+            ["tailscale", "status", "--json"],
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if res.returncode == 0:
-            ts_ip = res.stdout.strip().split("\n")[0].strip()
-            if ts_ip:
-                addrs["tailnet_ip"] = f"http://{ts_ip}:{web_port}"
-                addrs["tailnet_grpc"] = f"rerun+http://{ts_ip}:{grpc_port}/proxy"
+            data = json.loads(res.stdout)
+            self_node = data.get("Self", {})
+            dns_name = self_node.get("DNSName", "").rstrip(".")
+            host_name = self_node.get("HostName", "")
+            ips = self_node.get("TailscaleIPs", [])
 
-        if ts_ip:
-            res_status = subprocess.run(
-                ["tailscale", "status"], capture_output=True, text=True, check=False
-            )
-            if res_status.returncode == 0:
-                for line in res_status.stdout.splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[0] == ts_ip:
-                        addrs["tailnet_name"] = f"http://{parts[1]}:{web_port}"
-                        addrs["tailnet_fqdn"] = f"http://{parts[2]}:{web_port}"
-                        break
+            if dns_name:
+                addrs["tailscale_dns"] = f"http://{dns_name}:{web_port}"
+                addrs["tailscale_dns_grpc"] = (
+                    f"rerun+http://{dns_name}:{grpc_port}/proxy"
+                )
+                addrs["dns_host"] = dns_name
+            if host_name:
+                addrs["tailscale_name"] = f"http://{host_name}:{web_port}"
+            if ips:
+                addrs["tailnet_ip"] = f"http://{ips[0]}:{web_port}"
+                addrs["tailnet_ip_grpc"] = f"rerun+http://{ips[0]}:{grpc_port}/proxy"
     except Exception:
         pass
     return addrs
@@ -75,6 +78,7 @@ class _AutoRedirectProxy(http.server.SimpleHTTPRequestHandler):
 
     grpc_port: int = 9876
     internal_port: int = 9091
+    tailscale_dns: Optional[str] = None
 
     def log_message(self, format, *args):
         # Suppress noisy HTTP asset logs from terminal
@@ -88,9 +92,16 @@ class _AutoRedirectProxy(http.server.SimpleHTTPRequestHandler):
         host = host_header.split(":")[0]
 
         parsed = urllib.parse.urlparse(self.path)
-        # If user opened root path without ?url=, 302 redirect with ?url= matching their Host
+        # If user opened root path without ?url=, redirect with ?url= prioritizing Tailscale DNS
         if parsed.path == "/" and not parsed.query:
-            target = f"/?url=rerun+http://{host}:{self.grpc_port}/proxy"
+            if host in ("localhost", "127.0.0.1"):
+                target_host = host
+            elif self.tailscale_dns:
+                target_host = self.tailscale_dns
+            else:
+                target_host = host
+
+            target = f"http://{target_host}:{self.server.server_port}/?url=rerun+http://{target_host}:{self.grpc_port}/proxy"
             self.send_response(302)
             self.send_header("Location", target)
             self.end_headers()
@@ -223,11 +234,14 @@ class RerunDashboard:
             try:
                 rr.serve_web_viewer(web_port=internal_port, open_browser=False)
 
+                net_info = get_network_addrs(web_port, grpc_port)
+
                 class ConfiguredProxy(_AutoRedirectProxy):
                     pass
 
                 ConfiguredProxy.grpc_port = grpc_port
                 ConfiguredProxy.internal_port = internal_port
+                ConfiguredProxy.tailscale_dns = net_info.get("dns_host")
 
                 self._proxy_server = http.server.ThreadingHTTPServer(
                     (bind_host, web_port), ConfiguredProxy
@@ -237,18 +251,27 @@ class RerunDashboard:
                 )
                 t.start()
 
-                net_info = get_network_addrs(web_port, grpc_port)
                 print(
-                    f"\n{BOLD}{CYAN}🌐 Rerun Web Dashboard Active (Bound to {bind_host}:{web_port}):{RESET}"
+                    f"\n{BOLD}{CYAN}🌐 Rerun Web Dashboard Active (Tailscale DNS):{RESET}"
                 )
+                if "tailscale_dns" in net_info:
+                    print(
+                        f"  • {BOLD}Tailscale DNS:{RESET} {net_info['tailscale_dns']}"
+                    )
+                if "tailscale_name" in net_info:
+                    print(
+                        f"  • {BOLD}MagicDNS:{RESET}      {net_info['tailscale_name']}"
+                    )
                 if "tailnet_ip" in net_info:
                     print(f"  • {BOLD}Tailnet IP:{RESET}    {net_info['tailnet_ip']}")
-                if "tailnet_name" in net_info:
-                    print(f"  • {BOLD}MagicDNS:{RESET}      {net_info['tailnet_name']}")
                 print(f"  • {BOLD}Localhost:{RESET}     {net_info['localhost']}")
-                if "tailnet_grpc" in net_info:
+                if "tailscale_dns_grpc" in net_info:
                     print(
-                        f"  • {BOLD}Native App:{RESET}    rerun {net_info['tailnet_grpc']}\n"
+                        f"  • {BOLD}Native App:{RESET}    rerun {net_info['tailscale_dns_grpc']}\n"
+                    )
+                elif "tailnet_ip_grpc" in net_info:
+                    print(
+                        f"  • {BOLD}Native App:{RESET}    rerun {net_info['tailnet_ip_grpc']}\n"
                     )
                 else:
                     print(
@@ -269,11 +292,14 @@ class RerunDashboard:
                 internal_port = web_port + 1
                 rr.serve_web_viewer(web_port=internal_port, open_browser=False)
 
+                net_info = get_network_addrs(web_port, grpc_port)
+
                 class ConfiguredProxy(_AutoRedirectProxy):
                     pass
 
                 ConfiguredProxy.grpc_port = grpc_port
                 ConfiguredProxy.internal_port = internal_port
+                ConfiguredProxy.tailscale_dns = net_info.get("dns_host")
 
                 self._proxy_server = http.server.ThreadingHTTPServer(
                     (bind_host, web_port), ConfiguredProxy
