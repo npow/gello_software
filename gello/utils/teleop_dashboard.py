@@ -337,6 +337,7 @@ class RerunDashboard:
             rrb.Vertical(*views),
             collapse_panels=True,
         )
+        self.blueprint = blueprint
         rr.send_blueprint(blueprint)
 
         # Recording state
@@ -345,6 +346,7 @@ class RerunDashboard:
         self.current_episode_dir: Optional[Path] = None
         self.video_writers: Dict[str, cv2.VideoWriter] = {}
         self.episode_data: Dict[str, List] = {}
+        self._episode_rrd_stream: Optional[rr.RecordingStream] = None
 
         # Timing
         self.step_idx = 0
@@ -378,6 +380,19 @@ class RerunDashboard:
         self.current_episode_dir = self.output_dir / f"episode_{self.episode_idx:04d}"
         self.current_episode_dir.mkdir(parents=True, exist_ok=True)
 
+        # Stream directly to Rerun .rrd file if enabled
+        if self.save_rrd:
+            try:
+                rrd_path = str(self.current_episode_dir / "recording.rrd")
+                self._episode_rrd_stream = rr.RecordingStream(
+                    "yam_teleop", recording_id=f"episode_{self.episode_idx:04d}"
+                )
+                self._episode_rrd_stream.save(rrd_path)
+                self._episode_rrd_stream.send_blueprint(self.blueprint)
+            except Exception as e:
+                print(f"  {YELLOW}⚠ Failed to init .rrd stream: {e}{RESET}")
+                self._episode_rrd_stream = None
+
         # Initialize video writers for any active cameras
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         self.video_writers = {}
@@ -408,6 +423,14 @@ class RerunDashboard:
         for out in self.video_writers.values():
             out.release()
         self.video_writers.clear()
+
+        # Finalize Rerun .rrd file
+        if self._episode_rrd_stream is not None:
+            try:
+                self._episode_rrd_stream.disconnect()
+            except Exception:
+                pass
+            self._episode_rrd_stream = None
 
         # Save trajectory data
         if self.current_episode_dir is not None:
@@ -447,6 +470,13 @@ class RerunDashboard:
         for out in self.video_writers.values():
             out.release()
         self.video_writers.clear()
+
+        if self._episode_rrd_stream is not None:
+            try:
+                self._episode_rrd_stream.disconnect()
+            except Exception:
+                pass
+            self._episode_rrd_stream = None
 
         if self.current_episode_dir is not None and self.current_episode_dir.exists():
             import shutil
@@ -541,6 +571,50 @@ class RerunDashboard:
             self.episode_data["follower_joints"].append(follower_joints)
             self.episode_data["leader_actions"].append(leader_actions)
             self.episode_data["tracking_error"].append(tracking_error)
+
+            # Stream to episode .rrd file
+            if self._episode_rrd_stream is not None:
+                self._episode_rrd_stream.set_time(
+                    "step", sequence=self.episode_step_idx
+                )
+                self._episode_rrd_stream.set_time("time", timestamp=now)
+                self._episode_rrd_stream.log("teleop/telemetry/hz", rr.Scalars(self.hz))
+                self._episode_rrd_stream.log(
+                    "teleop/telemetry/max_tracking_error_deg",
+                    rr.Scalars(
+                        float(np.degrees(np.max(tracking_error)))
+                        if len(tracking_error)
+                        else 0.0
+                    ),
+                )
+                for j in range(min(num_left, len(follower_joints))):
+                    self._episode_rrd_stream.log(
+                        f"teleop/left_arm/j{j+1}_actual", rr.Scalars(follower_joints[j])
+                    )
+                    if j < len(leader_actions):
+                        self._episode_rrd_stream.log(
+                            f"teleop/left_arm/j{j+1}_target",
+                            rr.Scalars(leader_actions[j]),
+                        )
+                if self.bimanual and len(follower_joints) >= 14:
+                    for j in range(7, 14):
+                        self._episode_rrd_stream.log(
+                            f"teleop/right_arm/j{j-6}_actual",
+                            rr.Scalars(follower_joints[j]),
+                        )
+                        if j < len(leader_actions):
+                            self._episode_rrd_stream.log(
+                                f"teleop/right_arm/j{j-6}_target",
+                                rr.Scalars(leader_actions[j]),
+                            )
+                for name, rgb in frames.items():
+                    _, buf = cv2.imencode(".jpg", rgb, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    self._episode_rrd_stream.log(
+                        f"cameras/{name}",
+                        rr.EncodedImage(
+                            contents=buf.tobytes(), media_type="image/jpeg"
+                        ),
+                    )
 
             # Write to videos (convert RGB to BGR for cv2 VideoWriter)
             for name, rgb in frames.items():
