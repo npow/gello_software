@@ -85,25 +85,39 @@ class _AutoRedirectProxy(http.server.SimpleHTTPRequestHandler):
         pass
 
     def do_HEAD(self):
-        self.do_GET()
+        self._handle_proxy(is_head=True)
 
     def do_GET(self):
+        self._handle_proxy(is_head=False)
+
+    def _handle_proxy(self, is_head: bool = False):
         host_header = self.headers.get("Host", f"127.0.0.1:{self.server.server_port}")
-        host = host_header.split(":")[0]
+        if host_header.startswith("["):
+            host = (
+                host_header[: host_header.find("]") + 1]
+                if "]" in host_header
+                else host_header
+            )
+        else:
+            host = host_header.split(":")[0]
 
         parsed = urllib.parse.urlparse(self.path)
-        # If user opened root path without ?url=, redirect with ?url= prioritizing Tailscale DNS
+        # If user opened root path without ?url=, redirect with ?url= matching the host accessed
         if parsed.path == "/" and not parsed.query:
-            if host in ("localhost", "127.0.0.1"):
-                target_host = host
-            elif self.tailscale_dns:
-                target_host = self.tailscale_dns
-            else:
-                target_host = host
-
-            target = f"http://{target_host}:{self.server.server_port}/?url=rerun+http://{target_host}:{self.grpc_port}/proxy"
+            target_host = host if host else (self.tailscale_dns or "127.0.0.1")
+            grpc_url = f"rerun+http://{target_host}:{self.grpc_port}/proxy"
+            encoded_url = urllib.parse.quote(grpc_url, safe="")
+            target = f"/?url={encoded_url}"
             self.send_response(302)
             self.send_header("Location", target)
+            self.end_headers()
+            return
+
+        # If URL contains unencoded '+', redirect to percent-encoded '%2B' so JS URLSearchParams doesn't turn it into a space
+        if "+" in self.path:
+            clean_path = self.path.replace("+", "%2B")
+            self.send_response(302)
+            self.send_header("Location", clean_path)
             self.end_headers()
             return
 
@@ -119,7 +133,8 @@ class _AutoRedirectProxy(http.server.SimpleHTTPRequestHandler):
                 content = resp.read()
                 self.send_header("Content-Length", str(len(content)))
                 self.end_headers()
-                self.wfile.write(content)
+                if not is_head:
+                    self.wfile.write(content)
         except Exception as e:
             self.send_error(502, f"Proxy error: {e}")
 
