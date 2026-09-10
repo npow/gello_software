@@ -72,7 +72,19 @@ class Args:
     """Path to the right arm configuration YAML file (for bimanual operation)."""
 
     use_save_interface: bool = False
-    """Enable saving data with keyboard interface."""
+    """Enable legacy saving data with keyboard interface."""
+
+    use_rerun: bool = False
+    """Enable Rerun live operator dashboard and episodic recorder."""
+
+    rerun_web: bool = False
+    """Open Rerun dashboard in browser (web viewer) instead of native desktop window."""
+
+    enable_cameras: bool = True
+    """Enable streaming and recording from /dev/yam-cameras/* in Rerun."""
+
+    data_dir: str = "data/episodes"
+    """Output directory for recorded episodes."""
 
 
 def signal_handler(signum, frame):
@@ -283,17 +295,33 @@ def main():
 
     from gello.utils.control_utils import SaveInterface, run_control_loop
 
-    # Initialize save interface if requested
+    # Initialize save interface / rerun dashboard
     save_interface = None
-    if args.use_save_interface:
+    dashboard = None
+
+    if args.use_rerun:
+        from gello.utils.teleop_dashboard import RerunDashboard
+
+        dashboard = RerunDashboard(
+            output_dir=args.data_dir,
+            use_web=args.rerun_web,
+            enable_cameras=args.enable_cameras,
+            bimanual=bimanual,
+        )
+        save_interface = dashboard
+    elif args.use_save_interface:
         save_interface = SaveInterface(
             data_dir=Path(args.left_config_path).parents[1] / "data",
             agent_name=agent.__class__.__name__,
             expand_user=True,
         )
 
-    # Run main control loop
-    run_control_loop(env, agent, save_interface)
+    try:
+        # Run main control loop (suppress print_timing if RerunDashboard is active)
+        run_control_loop(env, agent, save_interface, print_timing=(dashboard is None))
+    finally:
+        if dashboard is not None:
+            dashboard.close()
 
 
 if __name__ == "__main__":
