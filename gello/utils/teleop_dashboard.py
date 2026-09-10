@@ -6,6 +6,7 @@ import http.server
 import json
 import os
 import select
+import socket
 import subprocess
 import sys
 import termios
@@ -234,6 +235,20 @@ class RerunDashboard:
         has_display = bool(
             os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
         )
+
+        # Ensure ports are not blocked by stale standalone rerun playback instances
+        for port_to_check in (grpc_port, web_port, web_port + 1):
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    if s.connect_ex(("127.0.0.1", port_to_check)) == 0:
+                        subprocess.run(
+                            ["pkill", "-9", "-f", "rerun_cli"],
+                            check=False,
+                        )
+                        time.sleep(0.5)
+                        break
+            except Exception:
+                pass
 
         rr.init("yam_teleop")
 
