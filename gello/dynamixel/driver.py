@@ -277,6 +277,10 @@ class DynamixelDriver(DynamixelDriverProtocol):
         if not self._portHandler.setBaudRate(self._baudrate):
             raise RuntimeError(f"Failed to change the baudrate, {self._baudrate}")
 
+        # Clear any stale bytes in serial buffer from prior runs
+        self._portHandler.clearPort()
+        time.sleep(0.05)
+
         # Add parameters for each Dynamixel servo to the group sync read
         for dxl_id in self._ids:
             if not self._groupSyncRead.addParam(dxl_id):
@@ -284,11 +288,8 @@ class DynamixelDriver(DynamixelDriverProtocol):
                     f"Failed to add parameter for Dynamixel with ID {dxl_id}"
                 )
 
-        # Disable torque for each Dynamixel servo
-        try:
-            self.set_torque_mode(self._torque_enabled)
-        except Exception as e:
-            print(f"port: {self._port}, {e}")
+        # Disable torque for each Dynamixel servo BEFORE starting high-rate read loop
+        self.set_torque_mode(self._torque_enabled)
 
         self._start_reading_thread()
 
@@ -399,12 +400,23 @@ class DynamixelDriver(DynamixelDriverProtocol):
         torque_value = TORQUE_ENABLE if enable else TORQUE_DISABLE
         with self._lock:
             for dxl_id in self._ids:
-                dxl_comm_result, dxl_error = self._packetHandler.write1ByteTxRx(
-                    self._portHandler, dxl_id, ADDR_TORQUE_ENABLE, torque_value
-                )
-                if dxl_comm_result != COMM_SUCCESS or dxl_error != 0:
-                    print(dxl_comm_result)
-                    print(dxl_error)
+                success = False
+                last_result, last_error = None, None
+                for attempt in range(3):
+                    dxl_comm_result, dxl_error = self._packetHandler.write1ByteTxRx(
+                        self._portHandler, dxl_id, ADDR_TORQUE_ENABLE, torque_value
+                    )
+                    if dxl_comm_result == COMM_SUCCESS and dxl_error == 0:
+                        success = True
+                        break
+                    last_result, last_error = dxl_comm_result, dxl_error
+                    self._portHandler.clearPort()
+                    time.sleep(0.02)
+
+                if not success:
+                    print(
+                        f"Torque mode fail on ID {dxl_id}: comm={last_result}, err={last_error}"
+                    )
                     raise RuntimeError(
                         f"Failed to set torque mode for Dynamixel with ID {dxl_id}"
                     )
@@ -416,10 +428,23 @@ class DynamixelDriver(DynamixelDriverProtocol):
             return
         with self._lock:
             for dxl_id in self._ids:
-                dxl_comm_result, dxl_error = self._packetHandler.write1ByteTxRx(
-                    self._portHandler, dxl_id, ADDR_OPERATING_MODE, mode
-                )
-                if dxl_comm_result != COMM_SUCCESS or dxl_error != 0:
+                success = False
+                last_result, last_error = None, None
+                for attempt in range(3):
+                    dxl_comm_result, dxl_error = self._packetHandler.write1ByteTxRx(
+                        self._portHandler, dxl_id, ADDR_OPERATING_MODE, mode
+                    )
+                    if dxl_comm_result == COMM_SUCCESS and dxl_error == 0:
+                        success = True
+                        break
+                    last_result, last_error = dxl_comm_result, dxl_error
+                    self._portHandler.clearPort()
+                    time.sleep(0.02)
+
+                if not success:
+                    print(
+                        f"Operating mode fail on ID {dxl_id}: comm={last_result}, err={last_error}"
+                    )
                     raise RuntimeError(
                         f"Failed to set operating mode for Dynamixel with ID {dxl_id}"
                     )
