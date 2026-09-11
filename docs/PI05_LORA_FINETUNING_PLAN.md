@@ -23,7 +23,7 @@ The full run is a requested comparison, not an assertion that OpenPI requires fu
 | Adaptations | (A) PaliGemma 2B LoRA + full 300M expert; (B) full-model fine-tuning |
 | LoRA implementation | OpenPI's built-in `gemma_2b_lora` (rank 16, alpha 16) |
 | Training hardware | One 80 GB H100 per concurrent run, rented interruptibly from Vast.ai |
-| Robot output | Active left arm only: 6 joints + 1 gripper |
+| Robot output | Canonical single-arm layout: 6 joints + 1 gripper; this dataset binds it to left |
 | Internal model width | 32 state/action dimensions, with OpenPI padding the 7 real dimensions |
 | Dataset rate | Timestamp-derived, resampled to 15 Hz |
 | Action horizon | 15 steps (1 second at 15 Hz) |
@@ -105,7 +105,7 @@ The seven dimensions are:
 [left_joint_0, ..., left_joint_5, left_gripper]
 ```
 
-The robot runtime, not the neural policy, must continue holding the right arm in its safe resting pose.
+The robot runtime, not the neural policy, must continue holding the inactive arm in its safe resting pose. A future right-only binding uses the same seven policy dimensions `0-6`; it must not move the active vector to bimanual dimensions `7-13`.
 
 ### 3.4 Camera mapping
 
@@ -269,7 +269,7 @@ Selection rules:
 
 On 2026-09-10, the live verified market included an 80 GB H100 SXM offer at approximately **$0.87/hour interruptible** with 99.35% reliability; another was approximately $0.66/hour at 97.74% reliability. Comparable on-demand H100 inventory started around $1.97/hour, while a $2.94/hour listing was not cost-effective. These are snapshots, not durable quotes.
 
-The active comparison uses Vast offer `36742497` / instance `50541903`: two H100 SXM 80 GB GPUs, 500 GB disk, reliability 99.91%, and OpenPI commit `215abfb217dbac7d5f1273282331b9b1866c0479`. The interruptible bid ceiling is $2.66/hour for compute; the currently reported all-in instance rate including storage is $2.7526/hour, or $1.3763 per H100-hour. The bid is deliberately above the fluctuating minimum to reduce eviction risk while remaining near the requested $1/GPU-hour target. Record measured seconds per step and final spend in the run log.
+The comparison began on Vast offer `36742497` / instance `50541903`: two H100 SXM 80 GB GPUs, 500 GB disk, reliability 99.91%, and OpenPI commit `215abfb217dbac7d5f1273282331b9b1866c0479`. Its all-in instance rate is $2.7526/hour. One GPU proved thermally throttled, so LoRA was restarted from the official base on offer `49402836` / instance `50543765`, a single H100 SXM 80 GB at $1.0333/hour all-in. Full fine-tuning remains on the healthy GPU of the original instance. At the time of the migration no second single-H100 offer below $1.55/hour was available; do not move the healthy full run merely to use a different provider listing. Record measured seconds per step and final spend in the run log.
 
 Expected wall-clock range:
 
@@ -323,6 +323,16 @@ uv run scripts/serve_policy.py policy:checkpoint \
   --policy.dir=checkpoints/pi05_yam_red_cap_lora/yam_red_cap_run01/7500
 ```
 
+The Servo-facing contract is independent of both physical side and training method:
+
+```bash
+servo serve pi0.5 \
+  --embodiment yam-single \
+  --checkpoint /absolute/path/to/promoted/checkpoint
+```
+
+`yam-single` always exchanges a compact seven-dimensional vector. The robot binding chooses `left` or `right`; LoRA versus full remains checkpoint/runtime metadata. This checkpoint requires the `top`, `left`, and `right` camera roles. A request with only `top` and `left` must fail compatibility until a missing-view mask has been deliberately trained and evaluated.
+
 ---
 
 ## 9. Evaluation and Deployment
@@ -368,6 +378,8 @@ The policy predicts 15 actions, but deployment should be receding-horizon:
 - [ ] Joint dimensions 0-5 are deltas; gripper dimension 6 is absolute.
 - [ ] A transform round-trip reproduces representative native commands.
 - [ ] Right arm is held by a separate safe controller.
+- [ ] Left-only and right-only robot bindings both map the active arm to policy dimensions 0-6.
+- [ ] Camera names are not used to infer which physical arm receives actions.
 
 ### Model and run
 
