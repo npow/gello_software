@@ -22,7 +22,7 @@ The full run is a requested comparison, not an assertion that OpenPI requires fu
 | Training implementation | Official `Physical-Intelligence/openpi`, JAX path |
 | Adaptations | (A) PaliGemma 2B LoRA + full 300M expert; (B) full-model fine-tuning |
 | LoRA implementation | OpenPI's built-in `gemma_2b_lora` (rank 16, alpha 16) |
-| Training hardware | One 80 GB H100 per concurrent run, rented interruptibly from Vast.ai |
+| Training hardware | One healthy 80 GB accelerator per concurrent run; use the best verified H100/A100 value available at launch |
 | Robot output | Canonical single-arm layout: 6 joints + 1 gripper; this dataset binds it to left |
 | Internal model width | 32 state/action dimensions, with OpenPI padding the 7 real dimensions |
 | Dataset rate | Timestamp-derived, resampled to 15 Hz |
@@ -269,7 +269,11 @@ Selection rules:
 
 On 2026-09-10, the live verified market included an 80 GB H100 SXM offer at approximately **$0.87/hour interruptible** with 99.35% reliability; another was approximately $0.66/hour at 97.74% reliability. Comparable on-demand H100 inventory started around $1.97/hour, while a $2.94/hour listing was not cost-effective. These are snapshots, not durable quotes.
 
-The comparison began on Vast offer `36742497` / instance `50541903`: two H100 SXM 80 GB GPUs, 500 GB disk, reliability 99.91%, and OpenPI commit `215abfb217dbac7d5f1273282331b9b1866c0479`. Its all-in instance rate is $2.7526/hour. One GPU proved thermally throttled, so LoRA was restarted from the official base on offer `49402836` / instance `50543765`, a single H100 SXM 80 GB at $1.0333/hour all-in. Full fine-tuning remains on the healthy GPU of the original instance. At the time of the migration no second single-H100 offer below $1.55/hour was available; do not move the healthy full run merely to use a different provider listing. Record measured seconds per step and final spend in the run log.
+The comparison began on Vast offer `36742497` / instance `50541903`: two H100 SXM 80 GB GPUs, 500 GB disk, reliability 99.91%, and OpenPI commit `215abfb217dbac7d5f1273282331b9b1866c0479`. Its all-in instance rate is $2.7526/hour. One GPU proved defective: it reached 92 C, fell to a 345 MHz SM clock, and was removed from sustained work. Full fine-tuning remains healthy on the other H100 at approximately 1.5 seconds/step.
+
+The first LoRA replacement, offer `49402836` / instance `50543765`, was a single interruptible H100 SXM 80 GB at $1.0333/hour all-in. It ran normally at approximately 1.3 seconds/step but was preempted near step 350, before the first step-500 recovery checkpoint. Its disk is retained while stopped at $0.0833/hour; repeated restart requests have remained queued despite a bid above the displayed minimum.
+
+LoRA was therefore restarted from the official base on on-demand offer `49067611` / instance `50546595`: one A100 SXM4 80 GB, 150 GB disk, 99.49% reliability, and $1.3257/hour all-in. The replacement passed its initial health check and advances at approximately 3.0 seconds/step at 62-63 C. The intended cost/time optimization is to hand its latest complete checkpoint to the healthy H100 after the full run finishes, then release the A100. Record the final handoff step, measured rates, metrics, and actual spend in the run log.
 
 Expected wall-clock range:
 
