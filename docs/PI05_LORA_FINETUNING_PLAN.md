@@ -2,15 +2,15 @@
 
 This is the working plan for adapting the **official Physical Intelligence $\pi_{0.5}$ base model** to the 100 collected YAM/Gello demonstrations in `data/episodes/`.
 
-The primary recipe is deliberately neither a tiny head-only adaptation nor a full-model update:
+Run two controlled experiments from the same official base and select by held-out metrics plus guarded robot rollouts:
 
-- apply LoRA to the 2B PaliGemma vision-language backbone;
-- train the complete 300M action expert and action projections;
+- primary: apply LoRA to the 2B PaliGemma vision-language backbone while training the complete 300M action expert and action projections;
+- comparison: fully fine-tune the 2B backbone, 300M action expert, and projections;
 - use the official OpenPI JAX trainer and official base weights;
 - train on the active left arm only;
 - reconstruct the demonstrations using their real timestamps rather than the MP4 container frame rate.
 
-Full-model fine-tuning is a fallback experiment, not the first run.
+The full run is a requested comparison, not an assertion that OpenPI requires full fine-tuning. It has higher overfitting risk on 100 demonstrations and must not receive an easier evaluation split.
 
 ---
 
@@ -20,15 +20,17 @@ Full-model fine-tuning is a fallback experiment, not the first run.
 | :--- | :--- |
 | Base weights | `gs://openpi-assets/checkpoints/pi05_base/params` |
 | Training implementation | Official `Physical-Intelligence/openpi`, JAX path |
-| Adaptation | PaliGemma 2B LoRA + fully trainable 300M action expert |
+| Adaptations | (A) PaliGemma 2B LoRA + full 300M expert; (B) full-model fine-tuning |
 | LoRA implementation | OpenPI's built-in `gemma_2b_lora` (rank 16, alpha 16) |
-| Training hardware | One 80 GB A100 or H100 rented from Vast.ai |
+| Training hardware | One 80 GB H100 per concurrent run, rented interruptibly from Vast.ai |
 | Robot output | Active left arm only: 6 joints + 1 gripper |
 | Internal model width | 32 state/action dimensions, with OpenPI padding the 7 real dimensions |
 | Dataset rate | Timestamp-derived, resampled to 15 Hz |
 | Action horizon | 15 steps (1 second at 15 Hz) |
 | Prompt | `pick up the red cap and place it in the black box` |
 | Primary stopping window | Compare checkpoints at 2,500, 5,000, 7,500, and 10,000 steps |
+
+The deterministic held-out source episode IDs are `6, 16, 26, 36, 46, 56, 66, 76, 86, 96`. Conversion produced 17,564 training frames and 1,993 evaluation frames. Both runs use random seed 42.
 
 Do **not** use `helen9975/pi05-molmoact-yam` in this experiment. It belongs to a different training/checkpoint stack and would make this no longer a clean test of the official base model.
 
@@ -179,7 +181,7 @@ TrainConfig(
     name="pi05_yam_red_cap_lora",
     model=yam_model,
     data=LeRobotYamDataConfig(
-        repo_id="npow/yam-gello-red-cap-100-15hz",
+        repo_id="npow/yam-gello-red-cap-100-15hz-train",
         default_prompt="pick up the red cap and place it in the black box",
     ),
     weight_loader=weight_loaders.CheckpointWeightLoader(
@@ -196,7 +198,7 @@ TrainConfig(
     ema_decay=None,
     batch_size=32,
     num_train_steps=10_000,
-    save_interval=2_500,
+    save_interval=500,
     keep_period=2_500,
     log_interval=50,
 )
@@ -211,11 +213,11 @@ Notes:
 - JAX OpenPI is required for this LoRA run. OpenPI's PyTorch trainer does not currently support LoRA.
 - If batch 32 is unstable or out of memory, retry batch 16. Compare runs in examples processed as well as raw step count.
 
-### Why this is the primary recipe
+### Controlled full-fine-tuning comparison
 
-This gives the robot-specific action pathway enough freedom to learn YAM kinematics while limiting changes to the large visual-language backbone. It is an appropriate first experiment for only 100 demonstrations.
+The full configuration uses `pi0_config.Pi0Config(pi05=True, action_dim=32, action_horizon=15)`, no freeze filter, and the same data, seed, batch size, LR schedule, EMA setting, save cadence, and 10,000-step budget. Both configurations load only `gs://openpi-assets/checkpoints/pi05_base/params` and share the exact same normalization-statistics file.
 
-OpenPI also supports full fine-tuning on an 80 GB accelerator, but it uses more than 70 GB and updates the entire model. Use that only as a second experiment if the LoRA/expert policy has clearly plateaued and the data/transform/evaluation pipeline has already been validated.
+LoRA plus a full expert remains the lower-risk prior for this small dataset because it can learn YAM kinematics without freely moving every vision-language weight. Full fine-tuning is valid and fits an 80 GB H100, but it uses more than 70 GB and may overfit. Decide from held-out open-loop metrics and robot task success, not training loss.
 
 ---
 
@@ -249,7 +251,7 @@ Before training, inspect the resulting arrays and confirm:
 
 ## 7. Vast.ai Hardware Selection
 
-Use one verified 80 GB accelerator. Re-run the search immediately before renting because Vast.ai prices and availability are dynamic.
+Use two verified 80 GB H100 accelerators when suitable interruptible offers are available, one per run. Re-run the search immediately before renting because Vast.ai prices and availability are dynamic.
 
 ```bash
 vastai search offers \
@@ -263,9 +265,11 @@ Selection rules:
 2. Prefer H100 SXM when it leads the value ranking and has at least 80 GB VRAM.
 3. Otherwise take the best A100 SXM4 80 GB offer; avoid the 40 GB A100 for possible full-tune follow-up runs.
 4. Require reliability above 98%, adequate download/upload bandwidth, at least 150 GB fast local disk, and enough allowed rental duration.
-5. Use on-demand pricing for the first run. Interruptible instances are only worthwhile after checkpoint/resume behavior has been tested.
+5. Use interruptible pricing near $1/hour, save recovery checkpoints every 500 steps, and automatically resume after eviction. Fall back to on-demand only if repeated evictions prevent progress.
 
-At the time this plan was revised, example marketplace listings showed an H100 SXM with higher generic DLPerf per dollar than an A100 SXM4, so **H100 SXM is the provisional choice**. This is not a durable price quote. Record the chosen offer, hourly price, GPU model, OpenPI commit, and measured seconds per step in the run log.
+On 2026-09-10, the live verified market included an 80 GB H100 SXM offer at approximately **$0.87/hour interruptible** with 99.35% reliability; another was approximately $0.66/hour at 97.74% reliability. Comparable on-demand H100 inventory started around $1.97/hour, while a $2.94/hour listing was not cost-effective. These are snapshots, not durable quotes.
+
+The active comparison uses Vast offer `36742497` / instance `50541903`: two H100 SXM 80 GB GPUs, 500 GB disk, reliability 99.91%, and OpenPI commit `215abfb217dbac7d5f1273282331b9b1866c0479`. The interruptible bid ceiling is $2.66/hour for compute; the currently reported all-in instance rate including storage is $2.7526/hour, or $1.3763 per H100-hour. The bid is deliberately above the fluctuating minimum to reduce eviction risk while remaining near the requested $1/GPU-hour target. Record measured seconds per step and final spend in the run log.
 
 Expected wall-clock range:
 
@@ -273,6 +277,7 @@ Expected wall-clock range:
 | :--- | :---: | :---: |
 | Setup, download, JAX compilation | 30-90 min | 30-90 min |
 | 10,000-step LoRA + full-expert run | approximately 2-5 hr | approximately 4-8 hr |
+| 10,000-step full-model run | approximately 3-7 hr | approximately 6-12 hr |
 | First guarded robot evaluation | 1-3 hr | 1-3 hr |
 
 These are planning ranges, not guarantees. Benchmark the first 100-200 post-compilation steps and replace the estimate with:
@@ -295,9 +300,16 @@ cd /home/npow/code/openpi
 uv run scripts/compute_norm_stats.py \
   --config-name pi05_yam_red_cap_lora
 
-XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
+CUDA_VISIBLE_DEVICES=0 \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
 uv run scripts/train.py pi05_yam_red_cap_lora \
-  --exp-name=yam_red_cap_run01 \
+  --exp-name=yam_red_cap_lora_run01 \
+  --overwrite
+
+CUDA_VISIBLE_DEVICES=1 \
+XLA_PYTHON_CLIENT_MEM_FRACTION=0.95 \
+uv run scripts/train.py pi05_yam_red_cap_full \
+  --exp-name=yam_red_cap_full_run01 \
   --overwrite
 ```
 
@@ -317,7 +329,7 @@ uv run scripts/serve_policy.py policy:checkpoint \
 
 Training loss is a debugging signal, not the final model-selection metric.
 
-For each candidate checkpoint:
+For each candidate checkpoint from both runs:
 
 1. Plot predicted action chunks against held-out demonstrations before connecting the robot.
 2. Confirm gripper direction, joint ordering, delta reconstruction, and numerical bounds.
@@ -362,11 +374,11 @@ The policy predicts 15 actions, but deployment should be receding-horizon:
 - [ ] The official `pi05_base/params` checkpoint is the only initializer.
 - [ ] Model `action_dim` remains 32 and physical output is sliced to 7.
 - [ ] Model config and freeze-filter config match exactly.
-- [ ] EMA is disabled for LoRA.
+- [ ] EMA is disabled in both runs so freezing is the principal comparison variable.
 - [ ] Fresh quantile statistics load successfully.
 - [ ] The OpenPI commit and dirty/clean status are recorded.
 - [ ] Vast.ai offer details and hourly price are recorded.
-- [ ] Checkpoints are retained at 2,500-step intervals.
+- [ ] Recovery checkpoints are written every 500 steps and candidates are retained every 2,500 steps.
 
 ### Robot safety
 
@@ -386,7 +398,7 @@ The policy predicts 15 actions, but deployment should be receding-horizon:
 5. Treating the side cameras as literal wrist cameras is harmless only if the mapping remains consistent.
 6. Computing stats before gripper inversion and joint-delta conversion makes training and inference disagree.
 7. Batch size 32 is a starting point, not a promise; measure memory and throughput on the selected host.
-8. Ten thousand steps at batch 32 is roughly 16 passes over a 19.5k-sample dataset. Later checkpoints can overfit, so evaluate earlier ones.
+8. Ten thousand steps at batch 32 is roughly 18 passes over the 17,564-sample training dataset. Later checkpoints can overfit, so evaluate earlier ones.
 9. A successful held-out video prediction does not establish closed-loop robot success.
 10. Synchronous image encoding/logging inside the control loop can reproduce the collection-rate problem in future data.
 
