@@ -202,22 +202,11 @@ class RerunDashboard:
         self.cameras: Dict[str, V4L2Camera] = {}
         if self.enable_cameras:
             # Map cameras to working video endpoints
+            # Use the udev names only: /dev/videoN numbers move between boots and
+            # once mapped the right wrist camera to "middle" and the center
+            # camera's infrared stream to "right".
             cam_map = {
-                "left": (
-                    "/dev/video8"
-                    if Path("/dev/video8").exists()
-                    else "/dev/yam-cameras/left"
-                ),
-                "middle": (
-                    "/dev/video16"
-                    if Path("/dev/video16").exists()
-                    else "/dev/yam-cameras/middle"
-                ),
-                "right": (
-                    "/dev/video2"
-                    if Path("/dev/video2").exists()
-                    else "/dev/yam-cameras/right"
-                ),
+                name: f"/dev/yam-cameras/{name}" for name in ("left", "middle", "right")
             }
             for name, dev in cam_map.items():
                 if Path(dev).exists():

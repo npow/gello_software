@@ -304,6 +304,35 @@ def main():
 
     from gello.utils.control_utils import SaveInterface, run_control_loop
 
+    # Safety: refuse to start if the leader pose is far from the follower's
+    # current pose, since the first command would otherwise snap the arm there.
+    import numpy as np
+
+    _obs = env.get_obs()
+    _cur = np.asarray(_obs["joint_positions"], dtype=float)
+    _tgt = np.asarray(agent.act(_obs), dtype=float)
+    # Leader encoders are multi-turn: shift each arm-joint offset by whole turns so
+    # the leader reads the 2*pi-equivalent angle nearest the follower's pose.
+    _dxl = getattr(agent, "_robot", None)
+    if _dxl is not None and hasattr(_dxl, "_joint_offsets"):
+        _turns = np.round((_tgt[:-1] - _cur[:-1]) / (2 * np.pi))
+        if np.any(_turns):
+            _dxl._joint_offsets[:-1] += _turns * 2 * np.pi * _dxl._joint_signs[:-1]
+            _dxl._last_pos = None  # drop smoothing history from the old offsets
+            _tgt = np.asarray(agent.act(_obs), dtype=float)
+    _diff = np.abs(_tgt[:-1] - _cur[:-1])
+    print(f"Leader->follower joint diff (rad): {np.round(_diff, 3).tolist()}")
+    if _diff.max() > 0.6:
+        print("ABORT: leader and follower differ by >0.6 rad. Match poses and retry.")
+        cleanup()
+        import os
+
+        os._exit(1)
+    # Ease the follower onto the leader pose (max 0.005 rad per step) instead of snapping.
+    _steps = max(1, int(np.ceil(_diff.max() / 0.005)))
+    for _q in np.linspace(_cur, _tgt, _steps + 1)[1:]:
+        env.step(_q)
+
     # Initialize save interface / rerun dashboard
     save_interface = None
     dashboard = None

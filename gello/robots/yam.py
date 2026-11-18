@@ -57,6 +57,8 @@ class YAMRobot(Robot):
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         ee_pos_quat = np.zeros(7)  # Placeholder for FK
+        # Read the real joints; _joint_state is only the last command (zeros at startup).
+        self._joint_state = self.get_joint_pos()
         return {
             "joint_positions": self._joint_state,
             "joint_velocities": self._joint_velocities,
