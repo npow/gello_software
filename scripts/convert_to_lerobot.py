@@ -39,7 +39,7 @@ def main() -> None:
     ap.add_argument("--repo-id", required=True)
     ap.add_argument(
         "--task",
-        default="Pick up the red lid from the conveyor belt",
+        required=True,
         help="language instruction stored on every frame",
     )
     ap.add_argument("--fps", type=int, default=30)
