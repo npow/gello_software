@@ -324,12 +324,16 @@ Collect teleoperation demonstrations with synchronized episodic recording and re
 
 Launch teleoperation with `--use_rerun` to stream joint positions, commanded states, and multi-camera video in real-time to an interactive Rerun dashboard. Each episode is saved with `.npz` trajectory data, `.mp4` camera videos, and a native `.rrd` Rerun recording stream.
 
+For the single left YAM mounted 180 degrees for the conveyor:
+
 ```bash
 python experiments/launch_yaml.py \
-  --left-config-path configs/yam_auto_generated.yaml \
-  --right-config-path configs/yam_auto_generated_right.yaml \
-  --use_rerun
+  --left-config-path configs/yam_left_conveyor.yaml \
+  --align-leader \
+  --use-rerun
 ```
+
+`--align-leader` checks the startup pose and gradually moves the follower to the leader. Use `--recover-can` to bring up the configured CAN interfaces and clear latched motor faults during launch.
 
 **Controls during teleoperation:**
 - Press **`Space`** or **`s`**: Start / Stop recording an episode.
@@ -337,7 +341,7 @@ python experiments/launch_yaml.py \
 - Press **`q`**: Quit teleoperation.
 
 **Accessing the Dashboard Remotely (Tailscale / LAN):**
-The server automatically binds to `0.0.0.0:9090` (web proxy) and `0.0.0.0:9876` (gRPC telemetry). You can open it in any browser across your Tailnet:
+With `--use-rerun --rerun-web`, the web proxy defaults to `0.0.0.0:9090` and gRPC telemetry uses port `9876`. The hardware command server listens on localhost. You can open the dashboard in a browser across your Tailnet:
 - **Tailnet DNS**: `http://<tailscale-hostname>.ts.net:9090` (e.g., `http://thor.tail17f7a4.ts.net:9090`)
 - **MagicDNS**: `http://<tailscale-hostname>:9090` (e.g., `http://thor:9090`)
 - **Direct IP**: `http://<tailnet-ip>:9090` (e.g., `http://100.91.170.9:9090`)

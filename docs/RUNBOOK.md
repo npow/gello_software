@@ -19,10 +19,11 @@ sudo bash scripts/reset_all_can.sh
 # 3. (Recommended) Run pre-flight hardware diagnostic
 python scripts/check_hardware.py
 
-# 4. Launch bimanual teleoperation
+# 4. Launch bimanual teleoperation with the left arm in its 180-degree conveyor mount
 python experiments/launch_yaml.py \
-  --left-config-path configs/yam_auto_generated.yaml \
-  --right-config-path configs/yam_auto_generated_right.yaml
+  --left-config-path configs/yam_left_conveyor.yaml \
+  --right-config-path configs/yam_right_conveyor.yaml \
+  --align-leader
 ```
 
 > [!TIP]
@@ -43,7 +44,7 @@ python experiments/launch_yaml.py \
 | **GELLO Leader Serial** | `...FTBEQBRC-if00-port0` | `...FTBEQC10-if00-port0` |
 | **Leader Baud Rate** | 57,600 baud | 57,600 baud |
 | **Leader Motor IDs** | 1 to 6 (Arm), 7 (Gripper) | 1 to 6 (Arm), 7 (Gripper) |
-| **Config File** | [`configs/yam_auto_generated.yaml`](file:///home/npow/code/gello_software/configs/yam_auto_generated.yaml) | [`configs/yam_auto_generated_right.yaml`](file:///home/npow/code/gello_software/configs/yam_auto_generated_right.yaml) |
+| **Config File** | [`configs/yam_left_conveyor.yaml`](../configs/yam_left_conveyor.yaml) | [`configs/yam_right_conveyor.yaml`](../configs/yam_right_conveyor.yaml) |
 
 ---
 
@@ -99,7 +100,7 @@ python experiments/launch_yaml.py \
     ```bash
     ls -l /dev/serial/by-id/usb-FTDI_*
     ```
-  - If serial IDs changed, update [`configs/yam_auto_generated.yaml`](file:///home/npow/code/gello_software/configs/yam_auto_generated.yaml) or [`configs/yam_auto_generated_right.yaml`](file:///home/npow/code/gello_software/configs/yam_auto_generated_right.yaml).
+  - If serial IDs changed, update the [left conveyor config](../configs/yam_left_conveyor.yaml) or [right conveyor config](../configs/yam_right_conveyor.yaml).
 
 ---
 
@@ -136,8 +137,8 @@ python experiments/launch_yaml.py \
 - **Symptom**: Leader zero position does not match follower zero position.
 - **Fix**: Put the leader arm into the calibration pose and regenerate configs:
   ```bash
-  # For left arm:
-  python scripts/generate_yam_config.py --channel can_left --output-path configs/yam_auto_generated.yaml
+  # Generate a fresh left-arm calibration file:
+  python scripts/generate_yam_config.py --channel can_left
 
   # For right arm:
   python scripts/generate_yam_config.py --channel can_right --output-path configs/yam_auto_generated_right.yaml

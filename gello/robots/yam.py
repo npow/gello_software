@@ -8,10 +8,11 @@ from gello.robots.robot import Robot
 class YAMRobot(Robot):
     """A class representing a simulated YAM robot."""
 
-    def __init__(self, channel="can0"):
+    def __init__(self, channel="can0", observe_measured_joints: bool = False):
         from i2rt.robots.get_robot import get_yam_robot
 
         self.robot = get_yam_robot(channel=channel)
+        self._observe_measured_joints = observe_measured_joints
 
         # YAM has 7 joints (6 arm joints + 1 gripper)
         self._joint_names = [
@@ -57,10 +58,11 @@ class YAMRobot(Robot):
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         ee_pos_quat = np.zeros(7)  # Placeholder for FK
-        # Read the real joints; _joint_state is only the last command (zeros at startup).
-        self._joint_state = self.get_joint_pos()
+        joint_positions = (
+            self.get_joint_pos() if self._observe_measured_joints else self._joint_state
+        )
         return {
-            "joint_positions": self._joint_state,
+            "joint_positions": joint_positions,
             "joint_velocities": self._joint_velocities,
             "ee_pos_quat": ee_pos_quat,
             "gripper_position": np.array([self._gripper_state]),

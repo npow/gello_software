@@ -6,7 +6,7 @@ and serves a live MJPEG stream plus joint readout over HTTP.
 
 Usage:
     MUJOCO_GL=egl python scripts/sim_mirror_viewer.py \
-        --config configs/yam_auto_generated.yaml --port 8000
+        --config configs/yam_left_conveyor.yaml --port 8000
 """
 
 import argparse

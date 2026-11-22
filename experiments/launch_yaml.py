@@ -87,7 +87,13 @@ class Args:
     """Output directory for recorded episodes."""
 
     bind_host: str = "0.0.0.0"
-    """Host IP to bind web viewer, gRPC stream, and robot servers to (default: 0.0.0.0 for Tailnet access)."""
+    """Host IP for the Rerun web proxy."""
+
+    recover_can: bool = False
+    """Bring up configured CAN interfaces and clear latched motor faults."""
+
+    align_leader: bool = False
+    """Check the initial leader pose and move the follower toward it gradually."""
 
     web_port: int = 9090
     """Port for Rerun web operator dashboard."""
@@ -159,6 +165,53 @@ def preflight_can_check(channel: str):
         pass
 
 
+def align_leader_pose(env, agent, bimanual: bool) -> bool:
+    import numpy as np
+
+    obs = env.get_obs()
+    current = np.asarray(env.robot().get_joint_state(), dtype=float)
+    obs["joint_positions"] = current
+    target = np.asarray(agent.act(obs), dtype=float)
+    if target.shape != current.shape or not np.isfinite([current, target]).all():
+        print("ABORT: invalid leader or follower joint positions.")
+        return False
+
+    leaders = (agent.agent_left, agent.agent_right) if bimanual else (agent,)
+    joints_per_arm = len(current) // len(leaders)
+    arm_deltas = (target - current).reshape(len(leaders), joints_per_arm)[:, :-1]
+    offsets_changed = False
+    for leader, deltas in zip(leaders, arm_deltas):
+        # Shift multi-turn encoders to the equivalent position nearest the follower.
+        dynamixel = getattr(leader, "_robot", None)
+        if dynamixel is not None and hasattr(dynamixel, "_joint_offsets"):
+            turns = np.round(deltas / (2 * np.pi))
+            if np.any(turns):
+                dynamixel._joint_offsets[:-1] += (
+                    turns * 2 * np.pi * dynamixel._joint_signs[:-1]
+                )
+                dynamixel._last_pos = None
+                offsets_changed = True
+
+    if offsets_changed:
+        target = np.asarray(agent.act(obs), dtype=float)
+        if target.shape != current.shape or not np.isfinite(target).all():
+            print("ABORT: invalid leader joint positions after encoder alignment.")
+            return False
+        arm_deltas = (target - current).reshape(len(leaders), joints_per_arm)[:, :-1]
+    max_delta = np.abs(arm_deltas).max(initial=0.0)
+    print(
+        f"Leader-to-follower joint differences (rad) {np.round(arm_deltas, 3).tolist()}"
+    )
+    if max_delta > 0.6:
+        print("ABORT: leader and follower differ by >0.6 rad. Match poses and retry.")
+        return False
+
+    steps = max(1, int(np.ceil(max_delta / 0.005)))
+    for joints in np.linspace(current, target, steps + 1)[1:]:
+        env.step(joints)
+    return True
+
+
 def main():
     # Register cleanup handlers
     # If terminated without cleanup, can leave ZMQ sockets bound causing "address in use" errors or resource leaks
@@ -205,14 +258,13 @@ def main():
                 OmegaConf.load(right_robot_cfg["config"]), resolve=True
             )
 
-    # Pre-flight CAN check and fault clearing
-    can_channels = []
-    if "channel" in left_robot_cfg:
-        can_channels.append(left_robot_cfg["channel"])
-    if bimanual and "channel" in right_robot_cfg:
-        can_channels.append(right_robot_cfg["channel"])
-    for ch in can_channels:
-        preflight_can_check(ch)
+    if args.recover_can:
+        robot_configs = (
+            [left_robot_cfg, right_robot_cfg] if bimanual else [left_robot_cfg]
+        )
+        for robot_config in robot_configs:
+            if "channel" in robot_config:
+                preflight_can_check(robot_config["channel"])
 
     try:
         left_robot = instantiate_from_dict(left_robot_cfg)
@@ -266,7 +318,7 @@ def main():
 
         # Get server configuration (use a different default port for hardware)
         hardware_port = cfg.get("hardware_server_port", 6001)
-        hardware_host = args.bind_host
+        hardware_host = "127.0.0.1"
 
         # Create ZMQ server for the hardware robot
         server = ZMQServerRobot(robot, port=hardware_port, host=hardware_host)
@@ -277,15 +329,15 @@ def main():
         active_threads.append(server_thread)
         active_servers.append(server)
 
-        # Wait for server to be ready (connect via localhost loopback)
+        # Wait for server to be ready
         print(
             f"Waiting for hardware server to start on {hardware_host}:{hardware_port}..."
         )
-        wait_for_server_ready(hardware_port, "127.0.0.1")
+        wait_for_server_ready(hardware_port, hardware_host)
         print("Hardware server ready!")
 
         # Create client to communicate with hardware locally
-        robot_client = ZMQClientRobot(port=hardware_port, host="127.0.0.1")
+        robot_client = ZMQClientRobot(port=hardware_port, host=hardware_host)
 
     env = RobotEnv(robot_client, control_rate_hz=cfg.get("hz", 30))
 
@@ -304,34 +356,9 @@ def main():
 
     from gello.utils.control_utils import SaveInterface, run_control_loop
 
-    # Safety: refuse to start if the leader pose is far from the follower's
-    # current pose, since the first command would otherwise snap the arm there.
-    import numpy as np
-
-    _obs = env.get_obs()
-    _cur = np.asarray(_obs["joint_positions"], dtype=float)
-    _tgt = np.asarray(agent.act(_obs), dtype=float)
-    # Leader encoders are multi-turn: shift each arm-joint offset by whole turns so
-    # the leader reads the 2*pi-equivalent angle nearest the follower's pose.
-    _dxl = getattr(agent, "_robot", None)
-    if _dxl is not None and hasattr(_dxl, "_joint_offsets"):
-        _turns = np.round((_tgt[:-1] - _cur[:-1]) / (2 * np.pi))
-        if np.any(_turns):
-            _dxl._joint_offsets[:-1] += _turns * 2 * np.pi * _dxl._joint_signs[:-1]
-            _dxl._last_pos = None  # drop smoothing history from the old offsets
-            _tgt = np.asarray(agent.act(_obs), dtype=float)
-    _diff = np.abs(_tgt[:-1] - _cur[:-1])
-    print(f"Leader->follower joint diff (rad): {np.round(_diff, 3).tolist()}")
-    if _diff.max() > 0.6:
-        print("ABORT: leader and follower differ by >0.6 rad. Match poses and retry.")
+    if args.align_leader and not align_leader_pose(env, agent, bimanual):
         cleanup()
-        import os
-
-        os._exit(1)
-    # Ease the follower onto the leader pose (max 0.005 rad per step) instead of snapping.
-    _steps = max(1, int(np.ceil(_diff.max() / 0.005)))
-    for _q in np.linspace(_cur, _tgt, _steps + 1)[1:]:
-        env.step(_q)
+        raise SystemExit(1)
 
     # Initialize save interface / rerun dashboard
     save_interface = None

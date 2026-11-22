@@ -288,8 +288,11 @@ class DynamixelDriver(DynamixelDriverProtocol):
                     f"Failed to add parameter for Dynamixel with ID {dxl_id}"
                 )
 
-        # Disable torque for each Dynamixel servo BEFORE starting high-rate read loop
-        self.set_torque_mode(self._torque_enabled)
+        # Disable torque for each Dynamixel servo before the high-rate read loop.
+        try:
+            self.set_torque_mode(self._torque_enabled)
+        except RuntimeError as e:
+            print(f"port: {self._port}, {e}")
 
         self._start_reading_thread()
 

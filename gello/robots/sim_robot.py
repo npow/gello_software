@@ -138,8 +138,10 @@ class MujocoRobotServer:
         host: str = "127.0.0.1",
         port: int = 5556,
         print_joints: bool = False,
+        normalize_builtin_gripper: bool = False,
     ):
         self._has_gripper = gripper_xml_path is not None
+        self._normalize_builtin_gripper = normalize_builtin_gripper
         arena = build_scene(xml_path, gripper_xml_path)
 
         assets: Dict[str, str] = {}
@@ -180,7 +182,7 @@ class MujocoRobotServer:
         _joint_cmd = joint_state.copy()
         if self._has_gripper:
             _joint_cmd[-1] = _joint_cmd[-1] * 255
-        elif self._model.nu > 6:
+        elif self._normalize_builtin_gripper and self._model.nu > 6:
             ctrl_min, ctrl_max = self._model.actuator_ctrlrange[-1]
             _joint_cmd[-1] = ctrl_min + _joint_cmd[-1] * (ctrl_max - ctrl_min)
         self._joint_cmd = _joint_cmd

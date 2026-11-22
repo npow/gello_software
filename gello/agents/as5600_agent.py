@@ -10,9 +10,7 @@ import numpy as np
 COUNTS_PER_REVOLUTION = 4096
 RADIANS_PER_COUNT = 2.0 * math.pi / COUNTS_PER_REVOLUTION
 POTENTIOMETER_COUNTS = 1024
-POTENTIOMETER_RADIANS_PER_COUNT = math.radians(300.0) / (
-    POTENTIOMETER_COUNTS - 1
-)
+POTENTIOMETER_RADIANS_PER_COUNT = math.radians(300.0) / (POTENTIOMETER_COUNTS - 1)
 PROTOCOL_COUNT_MAX = {"YAM1": 4095, "YAMP1": 1023}
 
 
@@ -101,8 +99,7 @@ def parse_encoder_line(
     bad_counts = [count for count in frame.counts if not 0 <= count <= maximum_count]
     if bad_counts:
         raise EncoderProtocolError(
-            f"Encoder counts must be in [0, {maximum_count}], "
-            f"received {bad_counts}"
+            f"Encoder counts must be in [0, {maximum_count}], " f"received {bad_counts}"
         )
     return frame
 
@@ -413,7 +410,9 @@ class AS5600SerialAgent:
 
         if self._require_deadman:
             if frame.deadman_pressed is None:
-                raise EncoderProtocolError("Firmware frame is missing the deadman state")
+                raise EncoderProtocolError(
+                    "Firmware frame is missing the deadman state"
+                )
             if not frame.deadman_pressed:
                 follower_joints = np.asarray(obs["joint_positions"], dtype=float)
                 if follower_joints.shape != (self._num_channels,):

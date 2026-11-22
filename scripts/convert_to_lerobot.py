@@ -6,7 +6,8 @@ action = leader commands (6 + gripper), absolute, at the recorded 30 Hz.
 
 Run with the openpi-pinned lerobot (see .venv-lerobot):
     .venv-lerobot/bin/python scripts/convert_to_lerobot.py \
-        --src data/red-lid-conveyor --repo-id npow/red-lid-conveyor --push --private
+        --src data/red-lid-conveyor --repo-id npow/red-lid-conveyor \
+        --task "Pick up the red lid from the conveyor belt" --push --private
 """
 
 import argparse
@@ -36,7 +37,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", nargs="+", required=True, help="episode root dir(s)")
     ap.add_argument("--repo-id", required=True)
-    ap.add_argument("--task", default="Pick up the red lid from the conveyor belt")
+    ap.add_argument(
+        "--task",
+        default="Pick up the red lid from the conveyor belt",
+        help="language instruction stored on every frame",
+    )
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--push", action="store_true")
     ap.add_argument("--private", action="store_true")

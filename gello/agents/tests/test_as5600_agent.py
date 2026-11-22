@@ -167,9 +167,7 @@ def test_potentiometer_agent_uses_non_wrapping_300_degree_mapping():
 
 
 def test_potentiometer_agent_rejects_encoder_firmware():
-    serial = FakeSerial(
-        [b"YAM1,1,10,500,500,500,500,500,500,500,1\n"]
-    )
+    serial = FakeSerial([b"YAM1,1,10,500,500,500,500,500,500,500,1\n"])
     with pytest.raises(EncoderProtocolError, match="Expected YAMP1"):
         PotentiometerSerialAgent(
             port="unused",

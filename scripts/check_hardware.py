@@ -247,9 +247,11 @@ def main():
         and right_leader_ok
     ):
         print(f"\n{BOLD}{GREEN}✓ All systems ready for launch!{RESET}")
-        print("Run command:")
+        print("Launch command for the 180-degree left conveyor setup:")
         print(
-            "  python experiments/launch_yaml.py --left-config-path configs/yam_auto_generated.yaml --right-config-path configs/yam_auto_generated_right.yaml\n"
+            "  python experiments/launch_yaml.py "
+            "--left-config-path configs/yam_left_conveyor.yaml "
+            "--right-config-path configs/yam_right_conveyor.yaml --align-leader\n"
         )
     else:
         print(f"\n{BOLD}{YELLOW}⚠ Please fix the errors above before launching.{RESET}")
